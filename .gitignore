@@ -68,3 +68,5 @@ models/*.joblib
 Thumbs.db
 .idea/
 .vscode/
+
+/report
