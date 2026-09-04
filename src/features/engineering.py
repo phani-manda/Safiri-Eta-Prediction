@@ -37,6 +37,16 @@ FEATURE_COLUMNS: tuple[str, ...] = (
     "previous_stage_delay",
 )
 
+# Carried through the feature frame for bookkeeping only -- never a model input.
+# The temporal split in src/models/train.py needs a chronological key, and
+# recovering it by re-reading the raw file invites row-order drift between the two.
+#
+# Deliberately not a feature: month and day_of_week already expose the useful
+# calendar signal, whereas the raw timestamp is monotonic, so a model could fit a
+# time trend against it and score well by learning "later rows have index N" --
+# exactly the illusion the temporal split exists to expose.
+METADATA_COLUMNS: tuple[str, ...] = ("scheduled_departure",)
+
 # Carried in the output frame so downstream code has labels to train against,
 # but never legal as an input to the model itself.
 TARGET_COLUMNS: tuple[str, ...] = (
@@ -167,7 +177,11 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     out["total_delay_hours"] = df["total_delay_hours"]
     out["is_delayed"] = df["is_delayed"]
 
-    out = out[list(FEATURE_COLUMNS) + list(TARGET_COLUMNS)]
+    # Sort key for the temporal split. Kept as a real timestamp rather than a
+    # string so consumers can sort without reparsing.
+    out["scheduled_departure"] = scheduled_departure
+
+    out = out[list(METADATA_COLUMNS) + list(FEATURE_COLUMNS) + list(TARGET_COLUMNS)]
     _assert_no_leakage(out)
     return out
 
@@ -185,7 +199,7 @@ def _assert_no_leakage(features: pd.DataFrame) -> None:
     if leaked:
         raise AssertionError(f"post-cutoff columns leaked into features: {leaked}")
 
-    allowed = set(FEATURE_COLUMNS) | set(TARGET_COLUMNS)
+    allowed = set(FEATURE_COLUMNS) | set(TARGET_COLUMNS) | set(METADATA_COLUMNS)
     unexpected = sorted(set(features.columns) - allowed)
     if unexpected:
         raise AssertionError(f"unvetted columns in feature frame: {unexpected}")
@@ -213,6 +227,10 @@ if __name__ == "__main__":
 
     print(f"\n{len(TARGET_COLUMNS)} TARGET columns (labels only, never inputs):")
     for name in TARGET_COLUMNS:
+        print(f"  {name:26s} {features[name].dtype}")
+
+    print(f"\n{len(METADATA_COLUMNS)} METADATA column (split key only, never an input):")
+    for name in METADATA_COLUMNS:
         print(f"  {name:26s} {features[name].dtype}")
 
     # Raw columns that carry through under a new name are absent from
