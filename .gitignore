@@ -1,0 +1,70 @@
+# --- Python defaults ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+*.manifest
+*.spec
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+*.mo
+*.pot
+*.log
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.ruff_cache/
+
+# --- Virtual environments ---
+.venv
+.venv/
+venv/
+env/
+ENV/
+
+# --- Notebooks ---
+.ipynb_checkpoints
+*/.ipynb_checkpoints/*
+
+# --- Project data & artifacts ---
+# Processed splits are regenerated from data/raw/shipments.csv, so they are not
+# tracked. The negation keeps the .gitkeep so the directory itself survives a
+# fresh clone -- a bare "data/processed/" rule would exclude the directory
+# outright and git would never descend into it to see the exception.
+data/processed/*
+!data/processed/.gitkeep
+
+# Trained models are build outputs, rebuilt by src/models/train.py.
+models/*.joblib
+
+# --- OS / editor noise ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
