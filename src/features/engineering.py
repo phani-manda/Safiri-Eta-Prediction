@@ -33,6 +33,8 @@ FEATURE_COLUMNS: tuple[str, ...] = (
     "document_readiness",
     "port_arrival_missing",
     "cumulative_delay_so_far",
+    "schedule_slack",
+    "previous_stage_delay",
 )
 
 # Carried in the output frame so downstream code has labels to train against,
@@ -62,6 +64,10 @@ REQUIRED_RAW_COLUMNS: frozenset[str] = frozenset(
     {
         "route",
         "scheduled_departure",
+        "scheduled_port_arrival",
+        "scheduled_delivery",
+        "customs_processing_hours",
+        "inland_transit_hours",
         "departure_delay_hours",
         "port_delay_hours",
         "port_congestion",
@@ -131,6 +137,33 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     # hours lost upstream compress the time left for customs and inland transit.
     out["cumulative_delay_so_far"] = df["departure_delay_hours"] + df["port_delay_hours"]
 
+    # How much room the plan leaves between docking and the delivery promise, once
+    # the work still owed inside that window is subtracted. Positive is genuine
+    # buffer that can absorb an upstream delay; negative means the plan was already
+    # infeasible before customs began, so the shipment arrives late even if every
+    # remaining stage runs exactly to its planned duration.
+    #
+    # Cutoff-legal despite describing stages that have not happened yet: the two
+    # timestamps are fixed at booking, and customs_processing_hours /
+    # inland_transit_hours are *planned baseline* durations, not observed actuals.
+    # The observed counterparts (customs_delay_hours, inland_delay_hours) are the
+    # forbidden ones, and neither is touched here.
+    scheduled_port_arrival = pd.to_datetime(df["scheduled_port_arrival"], errors="coerce")
+    scheduled_delivery = pd.to_datetime(df["scheduled_delivery"], errors="coerce")
+    planned_window_hours = (
+        scheduled_delivery - scheduled_port_arrival
+    ).dt.total_seconds() / 3600.0
+    out["schedule_slack"] = planned_window_hours - (
+        df["customs_processing_hours"] + df["inland_transit_hours"]
+    )
+
+    # Identical to port_delay_hours at this cutoff, and carried as its own column
+    # deliberately. "The most recent observed stage delay" is the concept the
+    # propagation story actually depends on; once a later cutoff is added (after
+    # customs clearance, say) it becomes customs_delay_hours instead, and every
+    # consumer reading previous_stage_delay keeps working without modification.
+    out["previous_stage_delay"] = df["port_delay_hours"]
+
     out["total_delay_hours"] = df["total_delay_hours"]
     out["is_delayed"] = df["is_delayed"]
 
@@ -199,3 +232,14 @@ if __name__ == "__main__":
 
     breaches = sorted(POST_CUTOFF_COLUMNS.intersection(features.columns))
     print(f"\nleakage check: {'FAILED -> ' + str(breaches) if breaches else 'PASS (no post-cutoff column present)'}")
+
+    slack = features["schedule_slack"]
+    print("\nschedule_slack .describe():")
+    print(slack.describe().round(2).to_string())
+
+    n_negative = int((slack < 0).sum())
+    print(
+        f"\n  negative slack (no room left): {n_negative} / {len(slack)} "
+        f"({n_negative / len(slack):.1%})"
+    )
+    print(f"  spread (max - min):            {slack.max() - slack.min():.2f} h")

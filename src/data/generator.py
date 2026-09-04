@@ -56,6 +56,19 @@ DELAY_THRESHOLD_HOURS = 6.0
 RAW_OPERATING_POINT_HOURS = 24.0
 DELAY_SCALE = DELAY_THRESHOLD_HOURS / RAW_OPERATING_POINT_HOURS  # 0.25
 
+# Promised hours from scheduled customs clearance to scheduled delivery. Drawn
+# wide rather than fixed at four days so that a realistic minority of bookings are
+# over-promised: the window does not cover the customs + inland work it has to
+# absorb, so schedule_slack comes out negative and the shipment lands late even if
+# every remaining stage runs exactly to its planned duration. Those are the
+# genuinely at-risk shipments, and with a fixed four-day promise none existed.
+# Tuned to put ~15-20% of bookings under water.
+DELIVERY_PROMISE_MEAN_HOURS = 70.0
+DELIVERY_PROMISE_SD_HOURS = 34.0
+# A schedule must stay chronologically valid: delivery cannot be promised at or
+# before clearance, however aggressive the booking.
+MIN_DELIVERY_PROMISE_HOURS = 6.0
+
 PORTS = [
     "Shanghai", "Rotterdam", "Singapore", "Mumbai", "Los Angeles",
     "Sydney", "Dubai", "Hamburg", "Santos", "Busan",
@@ -79,6 +92,12 @@ def _severity_hours(severity: int, ranges: dict, rng: np.random.Generator) -> fl
 
 def generate_shipments(n: int = N_SHIPMENTS, seed: int = SEED) -> pd.DataFrame:
     rng = np.random.default_rng(seed)
+    # Dedicated stream for the delivery promise only. Drawing it from `rng` would
+    # advance that generator's position and change every severity, delay and
+    # missingness draw that follows it -- silently invalidating the exploration
+    # notebook's reported statistics. An independent stream keeps this change
+    # surgical: scheduled_delivery moves, and nothing else does.
+    schedule_rng = np.random.default_rng(seed + 1)
     rows = []
 
     for i in range(n):
@@ -98,8 +117,18 @@ def generate_shipments(n: int = N_SHIPMENTS, seed: int = SEED) -> pd.DataFrame:
         scheduled_customs_clearance = scheduled_port_arrival + timedelta(
             days=1, hours=float(rng.uniform(-4, 4))
         )
+        # The original +/-6h jitter is still drawn from `rng`, in place, purely so
+        # this generator's stream position is unchanged and every downstream draw
+        # stays bit-identical to the previous dataset. The promise length itself
+        # comes from the dedicated schedule stream.
+        schedule_jitter_hours = float(rng.uniform(-6, 6))
+        delivery_promise_hours = max(
+            MIN_DELIVERY_PROMISE_HOURS,
+            float(schedule_rng.normal(DELIVERY_PROMISE_MEAN_HOURS, DELIVERY_PROMISE_SD_HOURS))
+            + schedule_jitter_hours,
+        )
         scheduled_delivery = scheduled_customs_clearance + timedelta(
-            days=4, hours=float(rng.uniform(-6, 6))
+            hours=delivery_promise_hours
         )
 
         # --- external factors -------------------------------------------------
@@ -270,6 +299,19 @@ if __name__ == "__main__":
     print("\n--- missingness rates ---")
     for col in ["actual_port_arrival_missing", "actual_customs_clearance_missing", "actual_delivery_missing"]:
         print(f"{col}: {df[col].mean():.1%}")
+
+    print("\n--- schedule_slack sanity check ---")
+    # Recomputed here with the canonical formula (see src/features/engineering.py)
+    # so the generator can verify it actually produced at-risk bookings.
+    window_hours = (
+        pd.to_datetime(df["scheduled_delivery"]) - pd.to_datetime(df["scheduled_port_arrival"])
+    ).dt.total_seconds() / 3600
+    slack = window_hours - (df["customs_processing_hours"] + df["inland_transit_hours"])
+    n_neg = int((slack < 0).sum())
+    print(f"slack range   : {slack.min():.1f} .. {slack.max():.1f} h  (mean {slack.mean():.1f})")
+    print(f"negative slack: {n_neg}/{len(df)} ({n_neg / len(df):.1%})  (target ~15-20%)")
+    print(f"delivery after clearance for every row: "
+          f"{(pd.to_datetime(df['scheduled_delivery']) > pd.to_datetime(df['scheduled_customs_clearance'])).all()}")
 
     print("\n--- null check ---")
     print("targets + post-cutoff delays, reconciled post-hoc, must be complete:")
