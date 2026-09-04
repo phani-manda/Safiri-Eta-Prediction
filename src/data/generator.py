@@ -13,9 +13,14 @@ Assignment constraints followed:
 - ~10-15% of intermediate timestamps are simulated as missing, with
   explicit missingness indicator columns (per PRD section 1.7 / suggested
   challenge "incomplete or missing intermediate data" in the brief).
+- port_delay_hours is nulled alongside a missing actual_port_arrival, so the
+  simulated gap actually bites on the input side (see the missingness block).
+- Delay magnitudes are scaled by DELAY_SCALE so that the canonical 6-hour
+  is_delayed threshold produces a usable class balance rather than a 98%
+  positive class (see DELAY_SCALE for why this preserves the causal structure).
 
 Schema matches the "Canonical schema & conventions" section of the build
-prompts file exactly.
+prompts file exactly, including is_delayed == total_delay_hours > 6.
 """
 
 import numpy as np
@@ -30,12 +35,26 @@ N_SHIPMENTS = 300
 SEED = 42
 PROPAGATION_COEF = 0.55  # fraction of upstream delay that carries into the next stage
 MISSING_PROB = 0.12
-# is_delayed threshold: set relative to the generated distribution (see the
-# printed .describe() below) rather than an arbitrary round number, and
-# documented explicitly as an assumption in the report -- "delayed" means
-# more than roughly a day later than scheduled, which given four propagating
-# stages corresponds to being at/above the median of this dataset.
-DELAY_THRESHOLD_HOURS = 24
+
+# Fixed by the canonical schema: is_delayed == total_delay_hours > 6.
+DELAY_THRESHOLD_HOURS = 6.0
+
+# The local-severity ranges below were tuned against a 24-hour operating point,
+# which put ~41% of shipments in the "delayed" class -- a healthy balance for a
+# classifier. Applying the canonical 6h threshold to that same raw scale instead
+# labels 98% of shipments delayed, leaving nothing to learn: "always delayed"
+# would score 98% accuracy.
+#
+# Canon pins the threshold but says nothing about delay magnitudes, so the
+# magnitudes are what move. Each delay below is a sum of local terms plus
+# PROPAGATION_COEF * upstream, clipped at zero -- a positively homogeneous
+# function -- so scaling the finished chain by a constant is algebraically
+# identical to scaling every local term, and correlations are scale-invariant, so
+# the causal structure survives untouched. Choosing the factor as 6/24 lands the
+# canonical threshold on precisely the quantile the 24h point occupied, which
+# preserves the class balance exactly as well.
+RAW_OPERATING_POINT_HOURS = 24.0
+DELAY_SCALE = DELAY_THRESHOLD_HOURS / RAW_OPERATING_POINT_HOURS  # 0.25
 
 PORTS = [
     "Shanghai", "Rotterdam", "Singapore", "Mumbai", "Los Angeles",
@@ -125,8 +144,30 @@ def generate_shipments(n: int = N_SHIPMENTS, seed: int = SEED) -> pd.DataFrame:
             + rng.normal(0, 1.0),
         )
 
-        total_delay_hours = (
-            departure_delay_hours + port_delay_hours + customs_delay_hours + inland_delay_hours
+        # Rescale the finished chain into the units the canonical 6h threshold
+        # assumes. Done here, once, rather than inside every local term above:
+        # the two are algebraically identical (see DELAY_SCALE) and this keeps the
+        # propagation math readable as propagation math.
+        departure_delay_hours *= DELAY_SCALE
+        port_delay_hours *= DELAY_SCALE
+        customs_delay_hours *= DELAY_SCALE
+        inland_delay_hours *= DELAY_SCALE
+
+        # Round BEFORE deriving anything from these values, not on the way out.
+        # is_delayed is *defined* as total_delay_hours > 6 and the CSV stores the
+        # total rounded to 2dp, so deriving the label from the unrounded value
+        # lets a 6.004h shipment be written as 6.0 while labelled delayed --
+        # anything that recomputes the label from the CSV then disagrees with the
+        # stored one. Rounding first also makes total == sum(stage delays) and
+        # actual == scheduled + delay hold exactly in the written file, so both
+        # canonical identities are verifiable from the data itself.
+        departure_delay_hours = round(departure_delay_hours, 2)
+        port_delay_hours = round(port_delay_hours, 2)
+        customs_delay_hours = round(customs_delay_hours, 2)
+        inland_delay_hours = round(inland_delay_hours, 2)
+
+        total_delay_hours = round(
+            departure_delay_hours + port_delay_hours + customs_delay_hours + inland_delay_hours, 2
         )
         is_delayed = total_delay_hours > DELAY_THRESHOLD_HOURS
 
@@ -161,11 +202,13 @@ def generate_shipments(n: int = N_SHIPMENTS, seed: int = SEED) -> pd.DataFrame:
                 "port_processing_hours": round(port_processing_hours, 2),
                 "customs_processing_hours": round(customs_processing_hours, 2),
                 "inland_transit_hours": round(inland_transit_hours, 2),
-                "departure_delay_hours": round(departure_delay_hours, 2),
-                "port_delay_hours": round(port_delay_hours, 2),
-                "customs_delay_hours": round(customs_delay_hours, 2),
-                "inland_delay_hours": round(inland_delay_hours, 2),
-                "total_delay_hours": round(total_delay_hours, 2),
+                # Already rounded above, deliberately: the label and the actual
+                # timestamps are derived from these exact values.
+                "departure_delay_hours": departure_delay_hours,
+                "port_delay_hours": port_delay_hours,
+                "customs_delay_hours": customs_delay_hours,
+                "inland_delay_hours": inland_delay_hours,
+                "total_delay_hours": total_delay_hours,
                 "is_delayed": is_delayed,
             }
         )
@@ -182,6 +225,22 @@ def generate_shipments(n: int = N_SHIPMENTS, seed: int = SEED) -> pd.DataFrame:
         mask = rng.random(len(df)) < MISSING_PROB
         df[missing_col] = mask.astype(int)
         df.loc[mask, ts_col] = pd.NaT
+
+    # A stage delay is defined as actual - scheduled, so a stage whose actual
+    # timestamp never arrived has no computable delay. port_delay_hours is nulled
+    # to match, because it is a *feature*: it has to reflect what the tracking
+    # feed had actually delivered at the prediction cutoff, and an unrecorded
+    # arrival means the operator genuinely cannot compute it at that moment.
+    # Leaving it populated would make the missingness simulation cosmetic -- any
+    # imputation built later would be validated against rows where nothing is
+    # really missing, and would look perfect for the wrong reason.
+    #
+    # The customs and inland delays and both targets are deliberately left
+    # populated. Those are assembled post-hoc during reconciliation, once the
+    # full shipment record exists, so point-in-time correctness binds the inputs
+    # and not the labels. Nulling them would instead wipe out ~27% of the
+    # training labels for no modelling benefit.
+    df.loc[df["actual_port_arrival_missing"] == 1, "port_delay_hours"] = np.nan
 
     return df
 
@@ -212,9 +271,17 @@ if __name__ == "__main__":
     for col in ["actual_port_arrival_missing", "actual_customs_clearance_missing", "actual_delivery_missing"]:
         print(f"{col}: {df[col].mean():.1%}")
 
-    print("\n--- null check on target/delay columns (should all be 0) ---")
-    delay_cols = [
-        "departure_delay_hours", "port_delay_hours", "customs_delay_hours",
-        "inland_delay_hours", "total_delay_hours", "is_delayed",
-    ]
-    print(df[delay_cols].isnull().sum())
+    print("\n--- null check ---")
+    print("targets + post-cutoff delays, reconciled post-hoc, must be complete:")
+    for col in [
+        "departure_delay_hours", "customs_delay_hours", "inland_delay_hours",
+        "total_delay_hours", "is_delayed",
+    ]:
+        n_null = int(df[col].isnull().sum())
+        print(f"  {col:24s} nulls={n_null:3d}  {'OK' if n_null == 0 else 'UNEXPECTED'}")
+
+    print("port_delay_hours is a cutoff-time feature, so it follows its timestamp:")
+    n_null = int(df["port_delay_hours"].isnull().sum())
+    n_expected = int(df["actual_port_arrival_missing"].sum())
+    print(f"  {'port_delay_hours':24s} nulls={n_null:3d}  "
+          f"{'OK' if n_null == n_expected else 'UNEXPECTED'} (expected {n_expected})")

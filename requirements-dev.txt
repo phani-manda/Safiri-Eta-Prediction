@@ -1,0 +1,10 @@
+# Development-only dependencies. Not needed to train or serve the model.
+#
+# requirements.txt deliberately carries no Jupyter stack, but notebooks/ cannot
+# be executed (or re-executed to refresh its stored outputs) without a kernel.
+# These are kept separate so a deployment install stays lean.
+-r requirements.txt
+
+ipykernel==7.3.0
+nbclient==0.11.0
+nbformat==5.11.1
