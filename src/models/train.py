@@ -33,7 +33,11 @@ import pandas as pd
 from sklearn.base import BaseEstimator
 from sklearn.compose import ColumnTransformer
 from sklearn.dummy import DummyClassifier
-from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
+from sklearn.ensemble import (
+    GradientBoostingRegressor,
+    RandomForestClassifier,
+    RandomForestRegressor,
+)
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LinearRegression
 from sklearn.linear_model import LogisticRegression
@@ -54,6 +58,7 @@ from src.models.components import PropagationConsistentImputer, RouteMeanRegress
 FEATURES_CSV = REPO_ROOT / "data" / "processed" / "features_v1.csv"
 MODEL_DIR = REPO_ROOT / "models"
 MODEL_PATH = MODEL_DIR / "eta_regressor.joblib"
+CLASSIFIER_MODEL_PATH = MODEL_DIR / "delay_classifier.joblib"
 
 # The selected model is the one with the lowest test MAE.
 SELECTION_SPLIT = "test"
@@ -259,6 +264,15 @@ CLASSIFIER_REGISTRY: list[tuple[str, ModelFactory]] = [
             LogisticRegression(class_weight="balanced", random_state=42, max_iter=1000), split
         ),
     ),
+    (
+        "Random forest",
+        lambda split: build_pipeline(
+            RandomForestClassifier(
+                n_estimators=200, class_weight="balanced", random_state=42
+            ),
+            split,
+        ),
+    ),
 ]
 
 
@@ -369,6 +383,20 @@ def select_best_model(results: pd.DataFrame) -> tuple[str, pd.Series]:
     return str(scores.idxmin()), scores
 
 
+def select_best_classifier(results: pd.DataFrame) -> tuple[str, pd.DataFrame]:
+    """Select the test classifier with best positive-class Recall, then F1."""
+    scores = (
+        results[results["split"] == "test"]
+        .set_index("model")[["Recall", "F1"]]
+        .reindex([name for name, _ in CLASSIFIER_REGISTRY])
+    )
+    if scores.isna().any(axis=None):
+        missing = sorted(scores[scores.isna().any(axis=1)].index)
+        raise ValueError(f"no test classification metrics recorded for: {missing}")
+    ranked = scores.sort_values(["Recall", "F1"], ascending=[False, False])
+    return str(ranked.index[0]), ranked
+
+
 def format_comparison(results: pd.DataFrame) -> str:
     """Render the comparison as a fixed-width table, in registry order."""
     header = f"{'model':<24}" + "".join(
@@ -457,7 +485,7 @@ if __name__ == "__main__":
 
     print(f"\nsaved -> {MODEL_PATH.relative_to(REPO_ROOT).as_posix()}")
 
-    class_results, _ = run_classification_comparison(split)
+    class_results, fitted_classifiers = run_classification_comparison(split)
     print("\nDelay classification target: is_delayed=True")
     print("Positive-class recall is printed as Recall; missed delays are the priority.\n")
     print(format_classification_comparison(class_results))
@@ -469,3 +497,13 @@ if __name__ == "__main__":
             f"\npositive-class Recall on {split_name}: "
             f"{best_recall['model']} = {best_recall['Recall']:.3f}"
         )
+
+    best_classifier_name, classifier_ranking = select_best_classifier(class_results)
+    joblib.dump(fitted_classifiers[best_classifier_name], CLASSIFIER_MODEL_PATH)
+    winner = classifier_ranking.loc[best_classifier_name]
+    print(f"\nselected classifier: {best_classifier_name}")
+    print(
+        "  criterion: highest test positive-class Recall, "
+        f"tie-break by F1 (Recall={winner['Recall']:.3f}, F1={winner['F1']:.3f})"
+    )
+    print(f"saved -> {CLASSIFIER_MODEL_PATH.relative_to(REPO_ROOT).as_posix()}")
