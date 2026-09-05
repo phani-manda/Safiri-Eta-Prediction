@@ -57,7 +57,7 @@ operations team can interrogate and trust, not just a number.
   not the targets.
 
   Imputation is handled by `PropagationConsistentImputer`
-  (`src/models/train.py`), fitted inside the model pipeline so the median comes
+  (`src/models/components.py`), fitted inside the model pipeline so the median comes
   from the training fold only. It fills the single underlying quantity
   (`port_delay_hours`) with the training median and then *recomputes* the two
   features defined in terms of it. A plain per-column median imputer would fill
