@@ -184,6 +184,21 @@ def make_temporal_split(
 # ---------------------------------------------------------------------------
 
 
+def build_preprocessor(split: TemporalSplit) -> ColumnTransformer:
+    """Build the shared route one-hot + numeric median preprocessing block."""
+    return ColumnTransformer(
+        transformers=[
+            (
+                "route",
+                OneHotEncoder(handle_unknown="ignore", sparse_output=False),
+                split.categorical_features,
+            ),
+            ("numeric", SimpleImputer(strategy="median", add_indicator=False), split.numeric_features),
+        ],
+        remainder="drop",
+    )
+
+
 def build_pipeline(estimator: BaseEstimator, split: TemporalSplit) -> Pipeline:
     """Wrap `estimator` in the shared preprocessing: one-hot route, median-impute numerics.
 
@@ -217,21 +232,10 @@ def build_pipeline(estimator: BaseEstimator, split: TemporalSplit) -> Pipeline:
     the strongest possible tree configuration -- but holding the representation
     fixed is what keeps the comparison honest.
     """
-    preprocessor = ColumnTransformer(
-        transformers=[
-            (
-                "route",
-                OneHotEncoder(handle_unknown="ignore", sparse_output=False),
-                split.categorical_features,
-            ),
-            ("numeric", SimpleImputer(strategy="median", add_indicator=False), split.numeric_features),
-        ],
-        remainder="drop",
-    )
     return Pipeline(
         [
             ("consistent_impute", PropagationConsistentImputer()),
-            ("prep", preprocessor),
+            ("prep", build_preprocessor(split)),
             ("model", estimator),
         ]
     )
@@ -317,50 +321,66 @@ def evaluate_classifier(model: BaseEstimator, X: pd.DataFrame, y_true: pd.Series
     }
 
 
+def run_model_comparison(
+    registry: list[tuple[str, ModelFactory]],
+    split: TemporalSplit,
+    y_train: pd.Series,
+    evaluations: tuple[tuple[str, pd.DataFrame, pd.Series], ...],
+    scorer: Callable[[BaseEstimator, pd.DataFrame, pd.Series], dict[str, float]],
+) -> tuple[pd.DataFrame, dict[str, BaseEstimator]]:
+    """Fit registered models once and score each on the requested splits."""
+    records: list[dict[str, object]] = []
+    fitted: dict[str, BaseEstimator] = {}
+
+    for name, factory in registry:
+        model = factory(split)
+        model.fit(split.X_train, y_train)
+        fitted[name] = model
+        for split_name, X, y in evaluations:
+            records.append({"model": name, "split": split_name, **scorer(model, X, y)})
+
+    return pd.DataFrame.from_records(records), fitted
+
+
+def score_regressor(model: BaseEstimator, X: pd.DataFrame, y_true: pd.Series) -> dict[str, float]:
+    """Regression metrics for a fitted model and one evaluation split."""
+    return evaluate(y_true, model.predict(X))
+
+
 def run_comparison(split: TemporalSplit) -> tuple[pd.DataFrame, dict[str, BaseEstimator]]:
-    """Fit every registered model on train and score it on val and test.
+    """Fit every registered regressor on train and score it on val and test.
 
     Returns the fitted estimators alongside the metrics so the selected model can
     be persisted without refitting. Refitting would waste work and, more
     importantly, risks saving an object that is not the one the reported numbers
     were measured on.
     """
-    records: list[dict[str, object]] = []
-    fitted: dict[str, BaseEstimator] = {}
-
-    for name, factory in MODEL_REGISTRY:
-        model = factory(split)
-        model.fit(split.X_train, split.y_train)
-        fitted[name] = model
-        for split_name, X, y in (
+    return run_model_comparison(
+        MODEL_REGISTRY,
+        split,
+        split.y_train,
+        (
             ("val", split.X_val, split.y_val),
             ("test", split.X_test, split.y_test),
-        ):
-            records.append({"model": name, "split": split_name, **evaluate(y, model.predict(X))})
-
-    return pd.DataFrame.from_records(records), fitted
+        ),
+        score_regressor,
+    )
 
 
 def run_classification_comparison(
     split: TemporalSplit,
 ) -> tuple[pd.DataFrame, dict[str, BaseEstimator]]:
     """Fit delay classifiers on train and score positive-class risk metrics."""
-    records: list[dict[str, object]] = []
-    fitted: dict[str, BaseEstimator] = {}
-
-    for name, factory in CLASSIFIER_REGISTRY:
-        model = factory(split)
-        model.fit(split.X_train, split.y_class_train)
-        fitted[name] = model
-        for split_name, X, y in (
+    return run_model_comparison(
+        CLASSIFIER_REGISTRY,
+        split,
+        split.y_class_train,
+        (
             ("val", split.X_val, split.y_class_val),
             ("test", split.X_test, split.y_class_test),
-        ):
-            records.append(
-                {"model": name, "split": split_name, **evaluate_classifier(model, X, y)}
-            )
-
-    return pd.DataFrame.from_records(records), fitted
+        ),
+        evaluate_classifier,
+    )
 
 
 def select_best_model(results: pd.DataFrame) -> tuple[str, pd.Series]:
