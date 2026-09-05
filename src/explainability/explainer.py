@@ -159,6 +159,32 @@ def explain_prediction(
     ]
 
 
+def generate_propagation_sentence(feature_row: pd.Series) -> str:
+    """Describe how upstream delays have propagated for one shipment."""
+    departure_delay = float(feature_row["departure_delay_hours"])
+    port_delay = pd.to_numeric(pd.Series([feature_row["port_delay_hours"]]), errors="coerce").iloc[0]
+    cumulative_delay = pd.to_numeric(
+        pd.Series([feature_row["cumulative_delay_so_far"]]), errors="coerce"
+    ).iloc[0]
+    schedule_slack = float(feature_row["schedule_slack"])
+
+    port_text = "an unknown port delay" if pd.isna(port_delay) else f"a {port_delay:.2f}h port delay"
+    cumulative_text = (
+        "an unknown cumulative delay"
+        if pd.isna(cumulative_delay)
+        else f"{cumulative_delay:.2f}h cumulative delay"
+    )
+    if schedule_slack < 0:
+        slack_text = "no remaining slack for the remaining stages"
+    else:
+        slack_text = f"{schedule_slack:.2f}h of schedule slack for the remaining stages"
+
+    return (
+        f"A {departure_delay:.2f}h departure delay contributed to {port_text}, "
+        f"bringing the shipment to {cumulative_text} and leaving {slack_text}."
+    )
+
+
 def _print_side_by_side(title: str, left: pd.DataFrame, right: pd.DataFrame) -> None:
     print(f"\n{title}")
     combined = pd.concat(
@@ -213,3 +239,5 @@ if __name__ == "__main__":
     print("top contributors:")
     for item in contributors:
         print(f"  {item['factor']}: {item['impact_hours']:.3f} h")
+    print("propagation:")
+    print(f"  {generate_propagation_sentence(example)}")
