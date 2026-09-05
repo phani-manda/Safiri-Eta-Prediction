@@ -236,3 +236,53 @@ Random forest                 0.800      0.833    0.816      0.915        0.875 
 Selected: **random forest** (test recall 1.000, F1 0.933) →
 `models/delay_classifier.joblib`. All held-out numbers are one draw on 45 test
 rows at a single seed and should be read with that uncertainty in mind.
+
+## 10. Limitations
+
+- **Synthetic data.** Every number in this report comes from a generated
+  dataset, not real freight operations. The causal structure is real *within
+  the generator*, but no claim is made about real-world effect sizes, route
+  economics, or delay distributions.
+- **Single fixed prediction cutoff.** The model predicts once, at port
+  arrival. Real operations would re-predict at each milestone (departure,
+  customs clearance, …) as information arrives; the feature contract anticipates
+  this (`previous_stage_delay`) but the pipeline implements only the one
+  cutoff.
+- **`impact_hours` is an approximation.** The per-prediction contributor
+  breakdown is a rescaled importance heuristic, not a rigorous Shapley-value
+  decomposition; with the three near-duplicate delay features an exact
+  per-column attribution is ill-defined (§7).
+- **Small N.** 300 rows, 45-row held-out sets, one seed. All reported metrics
+  are one draw with wide uncertainty; nothing here supports claims about
+  generalization to new lanes, seasons, or carriers.
+- **No live data-source integration.** There is no feed of real vessel/port
+  events; the API consumes hand-supplied payload fields.
+
+## 11. Future improvements
+
+- **SHAP-based explanations** to replace the rescaled heuristic with exact
+  additive attribution per prediction.
+- **Dynamic multi-stage re-prediction** as more milestones are observed —
+  re-forecasting at customs clearance with `previous_stage_delay` sourced from
+  the newly observed stage.
+- **Validation against real AIS / port-call data** to test whether the
+  propagation structure and feature importance ranking survive contact with
+  real operations.
+- **Persistent storage and a dashboard** so predictions, explanations and
+  outcomes accumulate for monitoring, drift checks, and retraining.
+
+## 12. Conclusion
+
+This project built an end-to-end, reproducible freight-delay forecasting
+system: synthetic data with a genuine causal propagation chain, a
+leakage-enforced feature contract tied to a single well-defined prediction
+cutoff, gradient-boosting and random-forest models that predict both delay
+magnitude and delay risk, an explanation layer that ties every prediction back
+to the upstream delays that caused it, a FastAPI service, and a test suite
+that pins the whole contract. The central design decision was to invest in
+propagation-aware features and interpretable models rather than pursue a
+black-box accuracy-maximizing approach — at N = 300 the ensembles match or beat
+anything more complex would plausibly achieve, and the explanation deliverable
+(the entire point of the exercise) falls out of the model class instead of
+being bolted on. The result is a small system whose numbers can be questioned,
+checked, and re-derived — which is what makes it useful.
