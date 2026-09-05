@@ -32,10 +32,20 @@ import joblib
 import pandas as pd
 from sklearn.base import BaseEstimator
 from sklearn.compose import ColumnTransformer
+from sklearn.dummy import DummyClassifier
 from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LinearRegression
-from sklearn.metrics import mean_absolute_error, r2_score, root_mean_squared_error
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import (
+    f1_score,
+    mean_absolute_error,
+    precision_score,
+    r2_score,
+    recall_score,
+    roc_auc_score,
+    root_mean_squared_error,
+)
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
 
@@ -50,6 +60,7 @@ SELECTION_SPLIT = "test"
 SELECTION_METRIC = "MAE"
 
 TARGET = "total_delay_hours"
+CLASSIFICATION_TARGET = "is_delayed"
 SORT_KEY = "scheduled_departure"
 ROUTE_COLUMN = "route"
 
@@ -72,10 +83,13 @@ class TemporalSplit:
 
     X_train: pd.DataFrame
     y_train: pd.Series
+    y_class_train: pd.Series
     X_val: pd.DataFrame
     y_val: pd.Series
+    y_class_val: pd.Series
     X_test: pd.DataFrame
     y_test: pd.Series
+    y_class_test: pd.Series
     train_period: tuple[pd.Timestamp, pd.Timestamp]
     val_period: tuple[pd.Timestamp, pd.Timestamp]
     test_period: tuple[pd.Timestamp, pd.Timestamp]
@@ -100,6 +114,8 @@ def load_features(path: Path = FEATURES_CSV) -> pd.DataFrame:
     df = pd.read_csv(path, parse_dates=[SORT_KEY])
     if TARGET not in df.columns:
         raise KeyError(f"{path} has no '{TARGET}' column to regress on")
+    if CLASSIFICATION_TARGET not in df.columns:
+        raise KeyError(f"{path} has no '{CLASSIFICATION_TARGET}' column to classify")
     return df
 
 
@@ -145,10 +161,13 @@ def make_temporal_split(
     return TemporalSplit(
         X_train=features_of(parts["train"]),
         y_train=parts["train"][TARGET],
+        y_class_train=parts["train"][CLASSIFICATION_TARGET].astype(bool),
         X_val=features_of(parts["val"]),
         y_val=parts["val"][TARGET],
+        y_class_val=parts["val"][CLASSIFICATION_TARGET].astype(bool),
         X_test=features_of(parts["test"]),
         y_test=parts["test"][TARGET],
+        y_class_test=parts["test"][CLASSIFICATION_TARGET].astype(bool),
         train_period=period_of(parts["train"]),
         val_period=period_of(parts["val"]),
         test_period=period_of(parts["test"]),
@@ -232,12 +251,23 @@ MODEL_REGISTRY: list[tuple[str, ModelFactory]] = [
     ),
 ]
 
+CLASSIFIER_REGISTRY: list[tuple[str, ModelFactory]] = [
+    ("Majority-class baseline", lambda split: DummyClassifier(strategy="most_frequent")),
+    (
+        "Logistic regression",
+        lambda split: build_pipeline(
+            LogisticRegression(class_weight="balanced", random_state=42, max_iter=1000), split
+        ),
+    ),
+]
+
 
 # ---------------------------------------------------------------------------
 # Evaluation
 # ---------------------------------------------------------------------------
 
 METRIC_NAMES = ("MAE", "RMSE", "R2")
+CLASSIFICATION_METRIC_NAMES = ("Precision", "Recall", "F1", "ROC-AUC")
 
 
 def evaluate(y_true, y_pred) -> dict[str, float]:
@@ -252,6 +282,24 @@ def evaluate(y_true, y_pred) -> dict[str, float]:
         "MAE": float(mean_absolute_error(y_true, y_pred)),
         "RMSE": float(root_mean_squared_error(y_true, y_pred)),
         "R2": float(r2_score(y_true, y_pred)),
+    }
+
+
+def evaluate_classifier(model: BaseEstimator, X: pd.DataFrame, y_true: pd.Series) -> dict[str, float]:
+    """Positive-class classification metrics for delay-risk predictions."""
+    y_pred = model.predict(X)
+    if hasattr(model, "predict_proba"):
+        positive_score = model.predict_proba(X)[:, 1]
+    elif hasattr(model, "decision_function"):
+        positive_score = model.decision_function(X)
+    else:
+        positive_score = y_pred
+
+    return {
+        "Precision": float(precision_score(y_true, y_pred, zero_division=0)),
+        "Recall": float(recall_score(y_true, y_pred, zero_division=0)),
+        "F1": float(f1_score(y_true, y_pred, zero_division=0)),
+        "ROC-AUC": float(roc_auc_score(y_true, positive_score)),
     }
 
 
@@ -275,6 +323,28 @@ def run_comparison(split: TemporalSplit) -> tuple[pd.DataFrame, dict[str, BaseEs
             ("test", split.X_test, split.y_test),
         ):
             records.append({"model": name, "split": split_name, **evaluate(y, model.predict(X))})
+
+    return pd.DataFrame.from_records(records), fitted
+
+
+def run_classification_comparison(
+    split: TemporalSplit,
+) -> tuple[pd.DataFrame, dict[str, BaseEstimator]]:
+    """Fit delay classifiers on train and score positive-class risk metrics."""
+    records: list[dict[str, object]] = []
+    fitted: dict[str, BaseEstimator] = {}
+
+    for name, factory in CLASSIFIER_REGISTRY:
+        model = factory(split)
+        model.fit(split.X_train, split.y_class_train)
+        fitted[name] = model
+        for split_name, X, y in (
+            ("val", split.X_val, split.y_class_val),
+            ("test", split.X_test, split.y_class_test),
+        ):
+            records.append(
+                {"model": name, "split": split_name, **evaluate_classifier(model, X, y)}
+            )
 
     return pd.DataFrame.from_records(records), fitted
 
@@ -312,6 +382,26 @@ def format_comparison(results: pd.DataFrame) -> str:
             row = results[(results["model"] == name) & (results["split"] == split_name)]
             for metric in METRIC_NAMES:
                 cells.append(f"{row[metric].iloc[0]:>12.3f}")
+        lines.append(f"{name:<24}" + "".join(cells))
+
+    return "\n".join(lines)
+
+
+def format_classification_comparison(results: pd.DataFrame) -> str:
+    """Render the classification comparison as a fixed-width table."""
+    header = f"{'model':<24}" + "".join(
+        f"{f'{s} {m}':>16}"
+        for s in ("val", "test")
+        for m in CLASSIFICATION_METRIC_NAMES
+    )
+    lines = [header, "-" * len(header)]
+
+    for name, _ in CLASSIFIER_REGISTRY:
+        cells = []
+        for split_name in ("val", "test"):
+            row = results[(results["model"] == name) & (results["split"] == split_name)]
+            for metric in CLASSIFICATION_METRIC_NAMES:
+                cells.append(f"{row[metric].iloc[0]:>16.3f}")
         lines.append(f"{name:<24}" + "".join(cells))
 
     return "\n".join(lines)
@@ -366,3 +456,16 @@ if __name__ == "__main__":
         print(f"    {name:<24}{value:>8.3f}   {note}")
 
     print(f"\nsaved -> {MODEL_PATH.relative_to(REPO_ROOT).as_posix()}")
+
+    class_results, _ = run_classification_comparison(split)
+    print("\nDelay classification target: is_delayed=True")
+    print("Positive-class recall is printed as Recall; missed delays are the priority.\n")
+    print(format_classification_comparison(class_results))
+
+    for split_name in ("val", "test"):
+        split_rows = class_results[class_results["split"] == split_name]
+        best_recall = split_rows.loc[split_rows["Recall"].idxmax()]
+        print(
+            f"\npositive-class Recall on {split_name}: "
+            f"{best_recall['model']} = {best_recall['Recall']:.3f}"
+        )
