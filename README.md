@@ -1,67 +1,184 @@
 # Safiri ETA Prediction
 
-## Problem
+An end-to-end prototype that answers three questions about a freight shipment
+at the moment its vessel has docked at port (the prediction cutoff):
 
-Freight shipments move through five sequential stages — origin departure, port
-arrival, customs clearance, inland transport, and final delivery — and a delay
-incurred at an early stage propagates downstream, compressing the time
-available for every stage that follows. This prototype predicts a shipment's
-final ETA and its delay risk partway through that journey, while there is still
-time to act on the forecast. Beyond the prediction itself, it explains *why*:
-which operational factors drive the estimate, and how much of it is attributable
-to delay already accumulated at upstream stages. The goal is a forecast an
-operations team can interrogate and trust, not just a number.
+1. **How late will it be?** — regress `total_delay_hours` with a gradient
+   boosting model (test MAE 0.648 h, RMSE 0.746 h, R² 0.912).
+2. **Will it be late?** — classify `is_delayed` (delay > 6 h) with a balanced
+   random forest (test positive-class recall 1.000, F1 0.933).
+3. **Why?** — feature importances, per-shipment top contributors, and a
+   plain-English propagation narrative returned with every prediction.
 
-## Assumptions
+Everything runs on synthetic data generated in-repo (300 shipments with genuine
+causal delay propagation), a leakage-safe feature frame, a chronological model
+comparison, persisted regressor **and** classifier artifacts, a FastAPI service,
+and an automated test suite (12 tests).
 
-*All four resolved as of Phase 1. See `report/phase1_report.md` for full derivations.*
+---
 
-- **Prediction cutoff definition:** prediction happens the moment
-  `actual_port_arrival` is observed — the shipment has departed and docked, but has
-  not yet cleared customs or begun inland transport. Legal inputs are everything
-  known by then: the four operational drivers, `route`, `month`, `day_of_week`, the
-  planned processing durations, and the two *observed* stage delays
-  (`departure_delay_hours`, `port_delay_hours`). Permanently forbidden as inputs:
-  `customs_delay_hours`, `inland_delay_hours`, `actual_customs_clearance`,
-  `actual_delivery`, their missingness flags, and both targets. Enforced at runtime
-  by `_assert_no_leakage` in `src/features/engineering.py`, which checks in both
-  directions — forbidden columns present, and unrecognised columns present.
-- **Delay threshold definition:** `is_delayed` is `total_delay_hours > 6`, exactly
-  as the canonical schema specifies. The generator's stage-delay magnitudes are
-  scaled by `DELAY_SCALE = 0.25` so that this threshold splits the data ~40/60
-  instead of labelling 98% of shipments delayed, which would leave the classifier
-  nothing to learn. Canon pins the threshold but not the delay magnitudes, so the
-  magnitudes are what moved. The factor is applied to the finished delay chain,
-  which is positively homogeneous, so it rescales units without altering a single
-  correlation — the causal structure is preserved exactly.
-- **Congestion/weather/customs complexity scales:** `port_congestion`,
-  `weather_severity` and `customs_complexity` are integer severity levels 0–3
-  (0 = none, 3 = severe), drawn uniformly and independently. Each maps to a range
-  of *local* delay hours at its own stage, pre-scaling: congestion and customs
-  `{0:(0,1), 1:(1,3), 2:(3,6), 3:(6,10)}`, weather
-  `{0:(0,0.5), 1:(0.5,2), 2:(2,5), 3:(5,9)}`, with the actual contribution drawn
-  uniformly inside the band. `document_readiness` is different in kind: a
-  continuous 0–1 score where **higher is better**, so its correlation with delay is
-  legitimately *negative*. Ranges are kept modest relative to the propagation term
-  on purpose — if a local severity effect dwarfs the inherited upstream delay,
-  stage-to-stage correlation washes out and the dataset loses the propagation it
-  exists to demonstrate.
-- **Missing data handling approach:** ~12% of intermediate actual timestamps are
-  simulated as missing, each with its own 0/1 indicator column.
-  `port_delay_hours` is nulled wherever `actual_port_arrival` is missing, because
-  it is a model *input* and must reflect what the tracking feed had actually
-  delivered at the prediction cutoff — a delay derived from an unobserved
-  timestamp is not knowable then. The post-cutoff stage delays and both targets
-  stay populated: labels are assembled post-hoc during reconciliation, when the
-  full shipment record exists, so point-in-time correctness binds the features and
-  not the targets.
+## Quick start
 
-  Imputation is handled by `PropagationConsistentImputer`
-  (`src/models/components.py`), fitted inside the model pipeline so the median comes
-  from the training fold only. It fills the single underlying quantity
-  (`port_delay_hours`) with the training median and then *recomputes* the two
-  features defined in terms of it. A plain per-column median imputer would fill
-  all three independently and leave `cumulative_delay_so_far ≠
-  departure_delay_hours + port_delay_hours` on the affected rows — a feature
-  contradicting its own definition, which is indefensible in a project whose
-  deliverable is upstream-stage attribution.
+Requires Python 3.11+. From the repo root:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+### Reproduce everything in one command
+
+```powershell
+.\.venv\Scripts\python.exe scripts\reproduce.py --tests
+```
+
+This runs, in dependency order and with the exact scripts the reports reference:
+
+1. `src\data\generator.py` — regenerate `data\raw\shipments.csv`
+2. `src\features\engineering.py` — build `data\processed\features_v1.csv`
+3. `src\models\train.py` — retrain and save both model artifacts
+4. `src\explainability\explainer.py` — print importance / contributor / narrative
+5. `pytest` — the full test suite
+
+(All data files and `.joblib` artifacts are gitignored build outputs and are
+regenerated by this script.)
+
+### Serve the API
+
+```powershell
+.\.venv\Scripts\python.exe -m uvicorn src.api.main:app --host 127.0.0.1 --port 8000
+```
+
+Health check:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8000/health
+```
+
+Prediction (example payload in `examples\predict_payload.json`):
+
+```powershell
+$body = Get-Content examples\predict_payload.json -Raw
+Invoke-RestMethod -Uri http://127.0.0.1:8000/predict -Method Post `
+  -ContentType 'application/json' -Body $body | ConvertTo-Json -Depth 5
+```
+
+The `/predict` response contains `predicted_delay_hours`, `predicted_eta`
+(ISO 8601), `delay_probability`, `risk_level` (LOW / MEDIUM / HIGH),
+`contributors` (top-3 factors) and `propagation` (the narrative sentence).
+
+### Run the tests standalone
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest
+```
+
+---
+
+## Pipeline
+
+```text
+data/raw/shipments.csv                      (300 x 28, generated)
+        |  src/features/engineering.py      (leakage-safe projection, 13 features)
+        v
+data/processed/features_v1.csv              (300 x 16)
+        |  src/models/train.py              (temporal split; regressor + classifier registries)
+        v
+models/eta_regressor.joblib   models/delay_classifier.joblib
+        |  src/explainability/explainer.py  (importances, contributors, narrative)
+        |  src/models/predictor.py          (payload -> feature row -> prediction)
+        v
+src/api/main.py                             (FastAPI: GET /health, POST /predict)
+        |
+        v
+tests/                                      (12 tests: API, features, leakage)
+```
+
+The leakage boundary is the backbone: prediction happens when
+`actual_port_arrival` is observed, so only fields knowable by then are legal
+model inputs. The boundary is enforced at build time (`_assert_no_leakage`),
+at test time (`tests/test_leakage.py`) and at service time (the API recomputes
+derived features from planned, booking-time fields only).
+---
+
+## Project structure
+
+```text
+src/
+  data/generator.py            synthetic 300-shipment dataset, causal propagation
+  features/engineering.py      leakage-safe feature frame, runtime leakage guard
+  models/
+    components.py              RouteMeanRegressor, PropagationConsistentImputer
+    train.py                   temporal split, model registries, comparison, persistence
+    predictor.py               inference wrapper (payload -> 13 features -> prediction)
+  explainability/explainer.py  built-in/permutation importances, contributors, narrative
+  api/main.py                  FastAPI service (/health, /predict)
+tests/
+  test_api.py                  5 API contract tests (TestClient)
+  test_features.py             4 feature-identity tests
+  test_leakage.py              3 leakage-boundary tests
+notebooks/
+  01_exploration.ipynb         Phase 1 exploration, executed with outputs
+scripts/
+  reproduce.py                 one-command pipeline reproduction (+ --tests)
+examples/
+  predict_payload.json         ready-to-post sample for /predict
+```
+
+---
+
+## Reports
+
+- `report/phase1_report.md` — Phase 1: data generation, exploration, leakage-safe
+  feature engineering, temporal regression comparison.
+- `report/phase2_report.md` — Phase 2: classification, explainability layer,
+  FastAPI service, and the automated test suite (Prompts 11–19).
+
+---
+
+## Key modeling assumptions
+
+*Full derivations and the surrounding reasoning are in `report/phase1_report.md` (§1–§3).*
+
+- **Prediction cutoff:** prediction happens the moment `actual_port_arrival` is
+  observed. Legal inputs are everything known by then; anything describing the
+  world after the cutoff (`customs_delay_hours`, `inland_delay_hours`,
+  `actual_customs_clearance`, `actual_delivery`, their missingness flags, and
+  both targets) is permanently forbidden and enforced at runtime and by tests.
+- **Delay threshold:** `is_delayed` is `total_delay_hours > 6` (canonical). The
+  generator's delay magnitudes are scaled by `DELAY_SCALE = 0.25` so the
+  threshold splits the data ~40/60 instead of labelling 98% delayed; the scale
+  factor is positively homogeneous, so it preserves every correlation and the
+  causal structure exactly.
+- **Severity scales:** `port_congestion`, `weather_severity` and
+  `customs_complexity` are integers 0–3 (0 = none, 3 = severe), each mapped to a
+  band of local delay hours; `document_readiness` is a continuous 0–1 score where
+  **higher is better**, so its correlation with delay is legitimately negative.
+- **Missing data:** ~12% of intermediate actual timestamps are missing, each with
+  an indicator column. `port_delay_hours` is nulled wherever
+  `actual_port_arrival` is missing (a delay derived from an unobserved timestamp
+  is not knowable at the cutoff), while post-cutoff delays and both targets stay
+  populated because labels are assembled post-hoc during reconciliation.
+  Imputation happens inside the model pipeline so the median comes from the
+  training fold only: `PropagationConsistentImputer`
+  (`src/models/components.py`) fills `port_delay_hours` and then *recomputes*
+  `cumulative_delay_so_far` and `previous_stage_delay` from it, so the canonical
+  identities never contradict the filled values.
+
+---
+
+## Known limitations (summary)
+
+- **Synthetic, single-seed, 300 rows.** Held-out metrics (45-row test) carry
+  wide uncertainty; every number in the reports is one draw at `SEED = 42`.
+- **`schedule_slack` measures consequence, not likelihood.** It has near-zero
+  model importance by design (Phase 1 §8), yet the API still computes it from
+  planned fields because the model consumes it.
+- **Per-prediction contributors are a labeled heuristic**, not exact
+  attribution; the three near-duplicate delay features prevent a provably exact
+  per-column decomposition (Phase 1 §6.7).
+- **The API assumes port arrival was observed.** The training data includes
+  40 missing-port-arrival rows (handled by in-pipeline imputation); the API
+  contract does not yet express that missing case.
+
+Details, verification and acceptance summaries are in the two reports.
