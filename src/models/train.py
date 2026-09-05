@@ -21,12 +21,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import sys
 from typing import Callable
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 import joblib
-import numpy as np
 import pandas as pd
-from sklearn.base import BaseEstimator, RegressorMixin, TransformerMixin
+from sklearn.base import BaseEstimator
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
 from sklearn.impute import SimpleImputer
@@ -35,7 +39,8 @@ from sklearn.metrics import mean_absolute_error, r2_score, root_mean_squared_err
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+from src.models.components import PropagationConsistentImputer, RouteMeanRegressor
+
 FEATURES_CSV = REPO_ROOT / "data" / "processed" / "features_v1.csv"
 MODEL_DIR = REPO_ROOT / "models"
 MODEL_PATH = MODEL_DIR / "eta_regressor.joblib"
@@ -153,81 +158,6 @@ def make_temporal_split(
 # ---------------------------------------------------------------------------
 # Models
 # ---------------------------------------------------------------------------
-
-
-class RouteMeanRegressor(BaseEstimator, RegressorMixin):
-    """Baseline: predict each route's mean target, learned from training data only.
-
-    The fallback is the load-bearing part. With 86 routes across 300 shipments
-    there are only ~2.6 training rows per route, so a held-out shipment can easily
-    travel a lane never seen in training. Those rows fall back to the global
-    training mean; without that, the baseline would emit NaN and no metric would
-    be computable.
-
-    Kept as an estimator rather than a function so it fits the same
-    fit/predict contract as every other entry in MODEL_REGISTRY.
-    """
-
-    def __init__(self, route_column: str = ROUTE_COLUMN) -> None:
-        self.route_column = route_column
-
-    def fit(self, X: pd.DataFrame, y) -> "RouteMeanRegressor":
-        target = pd.Series(np.asarray(y, dtype=float), index=X.index)
-        self.global_mean_ = float(target.mean())
-        self.route_means_ = target.groupby(X[self.route_column]).mean().to_dict()
-        self.n_routes_seen_ = len(self.route_means_)
-        return self
-
-    def predict(self, X: pd.DataFrame) -> np.ndarray:
-        mapped = X[self.route_column].map(self.route_means_)
-        return mapped.fillna(self.global_mean_).to_numpy(dtype=float)
-
-
-class PropagationConsistentImputer(BaseEstimator, TransformerMixin):
-    """Impute `port_delay_hours`, then rebuild the two features derived from it.
-
-    A plain per-column median imputer fills `port_delay_hours`,
-    `cumulative_delay_so_far` and `previous_stage_delay` independently, each with
-    its own median. But those three are not independent quantities: canon defines
-    `cumulative_delay_so_far == departure_delay_hours + port_delay_hours` and
-    `previous_stage_delay == port_delay_hours`. Filling them separately leaves the
-    13% of shipments with no recorded arrival in a state where the feature frame
-    contradicts its own definitions -- measured at a mean gap of 0.417 h.
-
-    That matters more here than the small accuracy difference would suggest. The
-    deliverable is an explanation of *which upstream stage delay drove this
-    prediction*, and an attribution built on a feature that silently violates its
-    own arithmetic is not defensible, however good the MAE looks.
-
-    So impute the single underlying quantity and recompute the derivations from it,
-    which keeps both identities exactly true on every row. The median is learned in
-    `fit`, so it comes from the training fold only.
-    """
-
-    REQUIRED = ("port_delay_hours", "departure_delay_hours", "cumulative_delay_so_far",
-                "previous_stage_delay")
-
-    def fit(self, X: pd.DataFrame, y=None) -> "PropagationConsistentImputer":
-        missing = [c for c in self.REQUIRED if c not in X.columns]
-        if missing:
-            raise KeyError(f"PropagationConsistentImputer requires columns: {missing}")
-        self.port_delay_median_ = float(X["port_delay_hours"].median())
-
-        # Recorded because Pipeline.feature_names_in_ delegates to its *first*
-        # step, and this transformer is that step. Without these, the persisted
-        # model exposes no input contract and inference code has no way to
-        # validate an incoming payload's columns.
-        self.feature_names_in_ = np.asarray(X.columns, dtype=object)
-        self.n_features_in_ = X.shape[1]
-        return self
-
-    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
-        out = X.copy()
-        port = out["port_delay_hours"].fillna(self.port_delay_median_)
-        out["port_delay_hours"] = port
-        out["cumulative_delay_so_far"] = out["departure_delay_hours"] + port
-        out["previous_stage_delay"] = port
-        return out
 
 
 def build_pipeline(estimator: BaseEstimator, split: TemporalSplit) -> Pipeline:
