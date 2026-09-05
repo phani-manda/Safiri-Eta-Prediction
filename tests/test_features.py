@@ -1,10 +1,8 @@
-"""Unit tests for src/features/engineering.py ``build_features()``.
+"""Unit tests for build_features() in src/features/engineering.py.
 
-Each test builds a single-row raw frame in the canonical schema whose values are
-known up front, then asserts the engineered output reproduces the documented
-definition for that row.
+Each test builds a single-row raw frame with known values and asserts the
+engineered output matches the documented formula for that row.
 """
-
 from __future__ import annotations
 
 import numpy as np

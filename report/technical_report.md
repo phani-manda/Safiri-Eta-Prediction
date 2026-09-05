@@ -273,19 +273,19 @@ rows at a single seed and should be read with that uncertainty in mind.
 
 ## 12. Conclusion
 
-This project built an end-to-end, reproducible freight-delay forecasting
-system: synthetic data with a genuine causal propagation chain, a
-leakage-enforced feature contract tied to a single well-defined prediction
-cutoff, gradient-boosting and random-forest models that predict both delay
-magnitude and delay risk, an explanation layer that ties every prediction back
-to the upstream delays that caused it, a FastAPI service, and a test suite
-that pins the whole contract. The central design decision was to invest in
-propagation-aware features and interpretable models rather than pursue a
-black-box accuracy-maximizing approach — at N = 300 the ensembles match or beat
-anything more complex would plausibly achieve, and the explanation deliverable
-(the entire point of the exercise) falls out of the model class instead of
-being bolted on. The result is a small system whose numbers can be questioned,
-checked, and re-derived — which is what makes it useful.
+I built an end-to-end, reproducible freight-delay forecasting system: synthetic
+data with a genuine causal propagation chain, a leakage-enforced feature
+contract tied to a single well-defined prediction cutoff, gradient-boosting and
+random-forest models that predict both delay magnitude and delay risk, an
+explanation layer that ties every prediction back to the upstream delays that
+caused it, a FastAPI service, and a test suite that pins the whole contract.
+The central design decision was to invest in propagation-aware features and
+interpretable models rather than pursue a black-box accuracy-maximizing
+approach — at N = 300 the ensembles match or beat anything more complex would
+plausibly achieve, and the explanation deliverable (the entire point of the
+exercise) falls out of the model class instead of being bolted on. The result
+is a small system whose numbers can be questioned, checked, and re-derived —
+which is what makes it useful.
 
 ## 13. Example prediction walkthrough
 

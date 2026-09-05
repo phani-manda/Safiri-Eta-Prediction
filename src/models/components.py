@@ -46,8 +46,7 @@ class PropagationConsistentImputer(BaseEstimator, TransformerMixin):
             raise KeyError(f"PropagationConsistentImputer requires columns: {missing}")
         self.port_delay_median_ = float(X["port_delay_hours"].median())
 
-        # Pipeline.feature_names_in_ delegates to its first step. Recording this
-        # here lets inference code validate incoming payload columns.
+        # record input schema so inference code can validate payload columns
         self.feature_names_in_ = np.asarray(X.columns, dtype=object)
         self.n_features_in_ = X.shape[1]
         return self

@@ -1,20 +1,9 @@
 """Train and compare delay-regression models under a temporal split.
 
-Two design choices dominate this module.
-
-**The split is temporal, not random.** A random split lets a model train on
-shipments that departed *after* the ones it is scored on. Nothing in the metrics
-reveals that, but it cannot happen in production, and it flatters every model --
-especially on a dataset with per-route structure, where a random split scatters
-each route across train and test and quietly hands the model route-level
-information it would not have on a genuinely new lane. Sorting by
-`scheduled_departure` and cutting forward in time reproduces the deployment
-situation: fit on the past, predict the future.
-
-**Models are registered, not hardcoded into the reporting path.** Every model is
-an estimator that consumes the same raw feature frame and owns its own
-preprocessing, so `MODEL_REGISTRY` is the only thing a later prompt needs to touch
-to add a model to the comparison. The split, the metrics and the table are shared.
+The split is temporal (not random): train on past shipments, score on future
+ones. This matches deployment and avoids the route-level leakage a random
+split would introduce. Models live in MODEL_REGISTRY, so adding one does not
+touch the comparison logic.
 """
 
 from __future__ import annotations
@@ -60,7 +49,7 @@ MODEL_DIR = REPO_ROOT / "models"
 MODEL_PATH = MODEL_DIR / "eta_regressor.joblib"
 CLASSIFIER_MODEL_PATH = MODEL_DIR / "delay_classifier.joblib"
 
-# The selected model is the one with the lowest test MAE.
+# pick lowest test MAE
 SELECTION_SPLIT = "test"
 SELECTION_METRIC = "MAE"
 
@@ -69,8 +58,7 @@ CLASSIFICATION_TARGET = "is_delayed"
 SORT_KEY = "scheduled_departure"
 ROUTE_COLUMN = "route"
 
-# Present in features_v1.csv but never model inputs: the chronological key exists
-# only to order rows for the split, and the two targets are what we predict.
+# sort key + targets are not model inputs
 NON_FEATURE_COLUMNS = (SORT_KEY, "total_delay_hours", "is_delayed")
 
 TRAIN_FRACTION = 0.70
@@ -477,8 +465,7 @@ if __name__ == "__main__":
           f"{len(split.numeric_features)} numeric); "
           f"'{SORT_KEY}' dropped after sorting")
 
-    # Unseen-route counts explain the baseline's fallback rate, so report them
-    # rather than leaving the reader to wonder why it underperforms.
+    # report unseen routes: they explain why the baseline falls back to the global mean
     train_routes = set(split.X_train[ROUTE_COLUMN])
     for label, X in (("val", split.X_val), ("test", split.X_test)):
         unseen = (~X[ROUTE_COLUMN].isin(train_routes)).sum()

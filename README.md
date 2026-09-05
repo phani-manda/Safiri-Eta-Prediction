@@ -1,16 +1,17 @@
 # Safiri ETA Prediction
 
-A freight-shipment prototype that, at the vessel-docking moment, predicts
-**how late** delivery will be, **whether** it will be delayed, and **why** —
-explained so an operations team can interrogate it.
+I built a freight-shipment prototype that, at the moment a vessel docks at
+port, predicts **how late** delivery will be, **whether** it will be delayed,
+and **why** — with an explanation an operations team can interrogate.
 
 ## Problem
 
 A shipment passes through five sequential stages — origin departure → port
 arrival → customs clearance → inland transport → delivery. Time lost early
-propagates downstream into the final delivery delay. The system must forecast
-that delay at the port-arrival cutoff, estimate the risk of a "delayed"
-shipment, and explain which factors and upstream delays produced the forecast.
+propagates downstream into the final delivery delay. The system needs to
+forecast that delay at the port-arrival cutoff, estimate the risk of a
+"delayed" shipment, and explain which factors and upstream delays produced the
+forecast.
 
 ## Approach summary
 
@@ -219,12 +220,13 @@ importances confirm is what the model actually learned.
 
 - Synthetic, single-seed, 300 rows — held-out metrics (45 rows) carry wide
   uncertainty.
-- Fixed prediction cutoff at port arrival; no multi-stage re-prediction.
+- Fixed prediction cutoff at port arrival; no multi-stage re-prediction yet.
 - `impact_hours` is an approximation, not exact Shapley attribution.
-- API assumes the port-arrival timestamp was observed (missingness handled at
-  train time only). No live data-source integration.
+- The API assumes the port-arrival timestamp was observed (missingness handled
+  at train time only). No live data-source integration.
 
 ## Future improvements
 
-Model cards + drift checks; multi-stage/streaming prediction; batch endpoint;
-exact-attribution explainability; a deployment path (Docker); live data.
+Model cards + drift checks; multi-stage/streaming re-prediction as more
+milestones are observed; a batch endpoint; exact-attribution explainability
+(e.g. SHAP); a deployment path (Docker); live data-source integration.

@@ -50,10 +50,8 @@ def _importance_frame(importances, names: list[str]) -> pd.DataFrame:
 def get_feature_importances(model, feature_names) -> pd.DataFrame:
     """Return built-in model importances, sorted descending.
 
-    Pipelines expose importances on their final estimator after preprocessing.
-    If one-hot encoding expands the feature space, route indicators are grouped
-    back into a single ``route`` feature so the table matches the raw feature
-    contract used at inference time.
+    Route one-hot columns are summed back into a single `route` feature
+    so the table matches the 13-feature contract used at inference.
     """
     estimator = _final_estimator(model)
     if not hasattr(estimator, "feature_importances_"):

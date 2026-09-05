@@ -1,11 +1,8 @@
-"""API endpoint tests for the Safiri FastAPI service.
+"""API endpoint tests using FastAPI TestClient (no server process).
 
-Tests run against the ASGI app directly through starlette's TestClient, so no
-server process is needed. The ``/predict`` endpoint loads the persisted model
-artifacts from ``models/``; those must exist (trained by ``src/models/train.py``)
+The /predict endpoint loads model artifacts from models/, which must exist
 before this module runs.
 """
-
 from __future__ import annotations
 
 from datetime import datetime
@@ -81,6 +78,6 @@ def test_predict_probability_bounded_and_eta_iso_parseable(
 ) -> None:
     body = client.post("/predict", json=VALID_PAYLOAD).json()
     assert 0.0 <= body["delay_probability"] <= 1.0
-    # Parses successfully (raises ValueError) only if ETA is a valid ISO datetime.
+    # raises ValueError if ETA is not valid ISO
     parsed_eta = datetime.fromisoformat(body["predicted_eta"])
     assert parsed_eta.tzinfo is None or parsed_eta.utcoffset() is not None

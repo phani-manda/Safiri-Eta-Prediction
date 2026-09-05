@@ -1,11 +1,7 @@
-"""Leakage-boundary tests for src/features/engineering.py ``build_features()``.
+"""Leakage-boundary tests for build_features().
 
-The prediction cutoff is the moment ``actual_port_arrival`` is observed. Anything
-that describes the world after that instant is permanently forbidden as a feature,
-so these tests assert -- as set memberships, not visual checks -- that no
-post-cutoff column ever appears in the engineered output.
+Asserts (as set memberships) that no post-cutoff column appears in the output.
 """
-
 from __future__ import annotations
 
 import pandas as pd
@@ -18,8 +14,7 @@ from src.features.engineering import (
     build_features,
 )
 
-# The specific columns the container cannot tolerate in its output, per the
-# canonical schema. "is_delayed" itself is the label and is expected to stay.
+# post-cutoff columns that must never appear in the output
 FORBIDDEN_COLUMNS = frozenset(
     {
         "customs_delay_hours",
@@ -69,6 +64,5 @@ def test_output_matches_documented_allow_list_exactly() -> None:
 
 
 def test_post_cutoff_set_is_broad_than_forbidden_list() -> None:
-    # Keep the two guards in step: everything FORBIDDEN_COLUMNS names must also be
-    # listed in the module's canonical POST_CUTOFF_COLUMNS.
+    # every forbidden column must also be in POST_CUTOFF_COLUMNS
     assert FORBIDDEN_COLUMNS.issubset(POST_CUTOFF_COLUMNS)
