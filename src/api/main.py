@@ -19,7 +19,10 @@ from src.models.predictor import predict_shipment  # noqa: E402
 class ShipmentPayload(BaseModel):
     origin: str
     destination: str
+    scheduled_port_arrival: datetime
     scheduled_delivery: datetime
+    customs_processing_hours: float = Field(ge=0)
+    inland_transit_hours: float = Field(ge=0)
     departure_delay_hours: float = Field(ge=0)
     port_delay_hours: float = Field(ge=0)
     port_congestion: int = Field(ge=0, le=3)

@@ -43,6 +43,15 @@ def _build_feature_row(payload: dict, feature_names: list[str]) -> pd.DataFrame:
     destination = payload["destination"]
     departure_delay = float(payload["departure_delay_hours"])
     port_delay = float(payload["port_delay_hours"])
+    scheduled_port_arrival = pd.to_datetime(payload["scheduled_port_arrival"])
+    scheduled_delivery = pd.to_datetime(payload["scheduled_delivery"])
+    planned_window_hours = (
+        scheduled_delivery - scheduled_port_arrival
+    ).total_seconds() / 3600.0
+    schedule_slack = planned_window_hours - (
+        float(payload["customs_processing_hours"])
+        + float(payload["inland_transit_hours"])
+    )
 
     values = {
         "route": f"{origin} -> {destination}",
@@ -56,9 +65,7 @@ def _build_feature_row(payload: dict, feature_names: list[str]) -> pd.DataFrame:
         "document_readiness": float(payload["document_readiness"]),
         "port_arrival_missing": int(payload.get("port_arrival_missing", 0)),
         "cumulative_delay_so_far": departure_delay + port_delay,
-        # The public API prompt does not include the planned fields needed to
-        # compute slack, so callers may provide it explicitly or fall back to 0.
-        "schedule_slack": float(payload.get("schedule_slack", 0.0)),
+        "schedule_slack": schedule_slack,
         "previous_stage_delay": port_delay,
     }
     return pd.DataFrame([values], columns=feature_names)
