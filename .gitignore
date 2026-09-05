@@ -69,4 +69,9 @@ Thumbs.db
 .idea/
 .vscode/
 
-/report
+# --- Project reports ---
+# Phase reports are working documents kept local; the technical report is a
+# tracked deliverable. Directory-level ignore would block re-inclusion, so the
+# rule targets contents instead.
+report/*
+!report/technical_report.md
