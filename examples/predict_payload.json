@@ -1,0 +1,16 @@
+{
+  "origin": "Santos",
+  "destination": "Hamburg",
+  "scheduled_port_arrival": "2026-04-29T01:15:15.521823",
+  "scheduled_delivery": "2026-05-04T06:47:43.483745",
+  "customs_processing_hours": 13.58,
+  "inland_transit_hours": 17.55,
+  "departure_delay_hours": 1.11,
+  "port_delay_hours": 2.76,
+  "port_congestion": 3,
+  "weather_severity": 2,
+  "customs_complexity": 3,
+  "document_readiness": 0.195,
+  "month": 4,
+  "day_of_week": 4
+}
