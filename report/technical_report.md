@@ -286,3 +286,56 @@ anything more complex would plausibly achieve, and the explanation deliverable
 (the entire point of the exercise) falls out of the model class instead of
 being bolted on. The result is a small system whose numbers can be questioned,
 checked, and re-derived — which is what makes it useful.
+
+## 13. Example prediction walkthrough
+
+A complete prediction, end to end, for a real held-out shipment —
+`SHP-0172` (Busan → Hamburg), the first row of the test split, which the model
+never saw during training.
+
+**Input features** (as observed at the port-arrival cutoff; actual outcome
+shown for scoring):
+
+| Feature | Value | | Feature | Value |
+|---|---|---|---|---|
+| `route` | Busan → Hamburg | | `port_congestion` | 3 |
+| `month` | 6 | | `weather_severity` | 3 |
+| `day_of_week` | 6 (Sunday) | | `customs_complexity` | 0 |
+| `departure_delay_hours` | 1.33 h | | `document_readiness` | 0.084 |
+| `port_delay_hours` | 2.22 h | | `port_arrival_missing` | 0 |
+| `cumulative_delay_so_far` | 3.55 h | | `previous_stage_delay` | 2.22 h |
+| `schedule_slack` | 78.31 h | | **actual `total_delay_hours`** | **7.85 h (delayed)** |
+
+**Calling `predict_shipment()` on that row** returns:
+
+```json
+{
+  "predicted_delay_hours": 8.04843514741357,
+  "predicted_eta": "2026-06-17T13:57:28.201716",
+  "delay_probability": 0.915,
+  "risk_level": "HIGH",
+  "contributors": [
+    {"factor": "schedule_slack", "impact_hours": 3.496598995537434},
+    {"factor": "cumulative_delay_so_far", "impact_hours": 3.2785753190502667},
+    {"factor": "customs_complexity", "impact_hours": -1.2732608328258699}
+  ],
+  "propagation": "A 1.33h departure delay contributed to a 2.22h port delay, bringing the shipment to 3.55h cumulative delay and leaving 78.31h of schedule slack for the remaining stages."
+}
+```
+
+**Reading it.** The shipment left Busan 1.33 h late and docked 2.22 h late —
+about 0.73 h of the port delay inherited from departure at the generator's
+0.55 coefficient, the rest from a severe congestion draw. By the cutoff the
+shipment carried 3.55 h of accumulated delay. The regressor turns that into a
+forecast of 8.05 h of final delay — against an actual of 7.85 h, an error of
+0.2 h on a row it never trained on — and the ETA lands at 13:57 on 17 June
+versus the 05:54 delivery promise. The classifier flags the shipment HIGH with
+0.915 probability of breaching the 6 h threshold, which it in fact did. The
+top contributors rank `schedule_slack` first (the row's slack is far from the
+training mean, so even a low-importance feature registers), then
+`cumulative_delay_so_far` — the propagation state itself — while
+`customs_complexity` *reduces* the estimate, correctly, because this shipment
+faces zero customs complexity. The propagation sentence states the mechanism
+in plain language, and the permutation importances (§7) confirm that this
+upstream-delay mechanism is what the model genuinely learned rather than a
+story bolted on after the fact.

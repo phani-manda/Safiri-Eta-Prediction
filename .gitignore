@@ -75,3 +75,4 @@ Thumbs.db
 # rule targets contents instead.
 report/*
 !report/technical_report.md
+!report/technical_report.pdf

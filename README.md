@@ -186,6 +186,35 @@ POST `/predict` with `examples/predict_payload.json` (Santos → Hamburg):
 `predicted_eta = scheduled_delivery + predicted_delay_hours` (ISO 8601);
 `risk_level` maps probability to LOW (<0.3) / MEDIUM (0.3–0.6) / HIGH (>0.6).
 
+## Example prediction walkthrough
+
+Real test-set shipment `SHP-0172` (Busan → Hamburg), inputs as observed at the
+cutoff: departure delay **1.33 h**, port delay **2.22 h**, congestion **3**,
+weather **3**, customs complexity **0**, document readiness **0.084**, slack
+**78.31 h**. Actual outcome: 7.85 h late (delayed).
+
+`predict_shipment()` on that row returns:
+
+```json
+{
+  "predicted_delay_hours": 8.048,
+  "predicted_eta": "2026-06-17T13:57:28.201716",
+  "delay_probability": 0.915,
+  "risk_level": "HIGH",
+  "contributors": [
+    {"factor": "schedule_slack", "impact_hours": 3.497},
+    {"factor": "cumulative_delay_so_far", "impact_hours": 3.279},
+    {"factor": "customs_complexity", "impact_hours": -1.273}
+  ],
+  "propagation": "A 1.33h departure delay contributed to a 2.22h port delay, bringing the shipment to 3.55h cumulative delay and leaving 78.31h of schedule slack for the remaining stages."
+}
+```
+
+Forecast ETA 13:57 vs the 05:54 promise (~8 h late); predicted 8.05 h against
+an actual 7.85 h; flagged HIGH at 0.915 probability. The propagation sentence
+names the mechanism — upstream delay inheritance — which the permutation
+importances confirm is what the model actually learned.
+
 ## Limitations
 
 - Synthetic, single-seed, 300 rows — held-out metrics (45 rows) carry wide
