@@ -9,7 +9,6 @@ post-cutoff column ever appears in the engineered output.
 from __future__ import annotations
 
 import pandas as pd
-import pytest
 
 from src.features.engineering import (
     FEATURE_COLUMNS,
