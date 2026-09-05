@@ -20,6 +20,8 @@ from src.models.train import (  # noqa: E402
     make_temporal_split,
 )
 
+_TRAINING_MEANS: pd.Series | None = None
+
 
 def _final_estimator(model):
     if hasattr(model, "named_steps") and "model" in model.named_steps:
@@ -101,6 +103,62 @@ def get_permutation_importances(
     )
 
 
+def _training_means() -> pd.Series:
+    global _TRAINING_MEANS
+    if _TRAINING_MEANS is None:
+        split = make_temporal_split(load_features())
+        _TRAINING_MEANS = split.X_train.select_dtypes(include="number").mean()
+    return _TRAINING_MEANS
+
+
+def explain_prediction(
+    model,
+    feature_row: pd.Series,
+    feature_importances: pd.DataFrame,
+    top_n=3,
+) -> list[dict]:
+    """Return approximate top contributors for a single prediction.
+
+    This is a lightweight heuristic, not a SHAP-equivalent decomposition. It
+    ranks numeric features by ``importance * deviation_from_training_mean`` and
+    scales the selected values so their absolute impact roughly tracks the
+    predicted delay magnitude.
+    """
+    means = _training_means()
+    importance_by_feature = feature_importances.set_index("feature")["importance"]
+    rows: list[dict[str, float | str]] = []
+
+    for feature, importance in importance_by_feature.items():
+        if feature not in feature_row.index or feature not in means.index:
+            continue
+        value = pd.to_numeric(pd.Series([feature_row[feature]]), errors="coerce").iloc[0]
+        if pd.isna(value):
+            value = means[feature]
+        raw_contribution = float(importance) * float(value - means[feature])
+        rows.append({"factor": feature, "raw_contribution": raw_contribution})
+
+    top = sorted(rows, key=lambda item: abs(float(item["raw_contribution"])), reverse=True)[
+        :top_n
+    ]
+    if not top:
+        return []
+
+    feature_frame = feature_row.to_frame().T
+    if hasattr(model, "feature_names_in_"):
+        feature_frame = feature_frame[list(model.feature_names_in_)]
+    predicted_delay = float(model.predict(feature_frame)[0])
+    raw_total = sum(abs(float(item["raw_contribution"])) for item in top)
+    scale = predicted_delay / raw_total if raw_total else 0.0
+
+    return [
+        {
+            "factor": str(item["factor"]),
+            "impact_hours": float(float(item["raw_contribution"]) * scale),
+        }
+        for item in top
+    ]
+
+
 def _print_side_by_side(title: str, left: pd.DataFrame, right: pd.DataFrame) -> None:
     print(f"\n{title}")
     combined = pd.concat(
@@ -145,3 +203,13 @@ if __name__ == "__main__":
 
     _flag_if_unexpected("ETA regressor", eta_builtin)
     _flag_if_unexpected("Delay classifier", delay_builtin)
+
+    example = split.X_test.iloc[0]
+    predicted_delay = float(eta_model.predict(example.to_frame().T)[0])
+    contributors = explain_prediction(eta_model, example, eta_builtin, top_n=3)
+
+    print("\nExample test-set prediction")
+    print(f"predicted_delay_hours: {predicted_delay:.3f}")
+    print("top contributors:")
+    for item in contributors:
+        print(f"  {item['factor']}: {item['impact_hours']:.3f} h")
