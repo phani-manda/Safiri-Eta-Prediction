@@ -11,3 +11,5 @@ pydantic==2.13.5
 joblib==1.6.0
 pytest==9.1.1
 matplotlib==3.11.1
+# Starlette>=1.0's TestClient needs the httpx2 HTTP client to run the API tests.
+httpx2==2.12.0
