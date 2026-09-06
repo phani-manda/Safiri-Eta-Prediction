@@ -24,31 +24,91 @@ as `.joblib` → a **FastAPI service** returning prediction + risk + contributor
 
 ## Architecture
 
-```text
-data/raw/shipments.csv  (300 x 28, generated)
-        |  src/features/engineering.py      (leakage-safe projection)
-        v
-data/processed/features_v1.csv  (300 x 16)
-        |  src/models/train.py              (temporal split, comparison, persistence)
-        v
-models/eta_regressor.joblib  models/delay_classifier.joblib
-        |  src/explainability/explainer.py  (importances, contributors, narrative)
-        |  src/models/predictor.py          (payload -> feature row -> prediction)
-        v
-src/api/main.py                     (FastAPI: GET /health, POST /predict)
-        |
-        v
-tests/  test_api.py  test_features.py  test_leakage.py
+```
+                          ┌──────────────────────────┐
+                          │  src/data/generator.py   │
+                          │  synthetic 300 shipments │
+                          │  SEED=42  |  12% missing  │
+                          └────────────┬─────────────┘
+                                       │
+                                       ▼
+                          ┌──────────────────────────┐
+                          │  data/raw/shipments.csv  │
+                          │  300 rows x 28 columns   │
+                          └────────────┬─────────────┘
+                                       │
+                                       ▼
+                     ┌─────────────────────────────────────┐
+                     │     src/features/engineering.py     │
+                     │  leakage-safe projection  (13 cols) │
+                     │  _assert_no_leakage() guard         │
+                     └──────────────────┬──────────────────┘
+                                        │
+                                        ▼
+                          ┌──────────────────────────┐
+                          │ data/processed/          │
+                          │   features_v1.csv        │
+                          │ 300 rows x 16 columns    │
+                          └────────────┬─────────────┘
+                                       │
+                                       ▼
+                        ┌──────────────────────────────┐
+                        │      src/models/train.py     │
+                        │  temporal 70/15/15 split     │
+                        │  4 regressors + 3 classifiers │
+                        └───────────────┬──────────────┘
+                                        │
+                    ┌───────────────────┴───────────────────┐
+                    ▼                                       ▼
+     ┌────────────────────────────┐      ┌────────────────────────────┐
+     │ models/eta_regressor.joblib│      │models/delay_classifier.    │
+     │  (GBR — lowest test MAE)   │      │  joblib (RF — top recall)  │
+     └─────────────┬──────────────┘      └──────────────┬─────────────┘
+                   │                                    │
+                   └──────────────┬─────────────────────┘
+                                  │
+                                  ▼
+                     ┌────────────────────────────┐
+                     │ src/explainability/        │
+                     │      explainer.py          │
+                     │  importances, top-3        │
+                     │  contributors, narrative   │
+                     └─────────────┬──────────────┘
+                                   │
+                                   ▼
+                     ┌────────────────────────────┐
+                     │  src/models/predictor.py   │
+                     │  payload → 13-feat row →   │
+                     │  prediction + explanation  │
+                     └─────────────┬──────────────┘
+                                   │
+                                   ▼
+                        ┌────────────────────┐
+                        │  src/api/main.py   │
+                        │  FastAPI service   │
+                        │  /health  /predict │
+                        └─────────┬──────────┘
+                                  │
+                                  ▼
+                        ┌────────────────────┐
+                        │      tests/        │
+                        │  5 API  4 feat     │
+                        │  3 leakage         │
+                        └────────────────────┘
 ```
 
-- **`generator.py`** — deterministic synthetic data with causal propagation, `SEED = 42`, 12% missing timestamps.
-- **`engineering.py`** — projects raw rows to the 13 cutoff-legal features; runtime leakage guard.
-- **`train.py`** — temporal split, model registries, comparison, persists both winners.
-- **`components.py`** — import-safe `RouteMeanRegressor` + `PropagationConsistentImputer`.
-- **`explainer.py`** — importances, per-prediction contributors, propagation sentence.
-- **`predictor.py`** — inference wrapper; owns the payload → feature mapping.
-- **`main.py`** — FastAPI app, pydantic-validated payloads.
-- **`tests/`** — 5 API, 4 feature-identity, 3 leakage-boundary tests.
+**Component reference**
+
+| File | Role |
+|---|---|
+| `generator.py` | deterministic synthetic data with causal propagation |
+| `engineering.py` | projects raw rows to the 13 cutoff-legal features |
+| `train.py` | temporal split, model registries, comparison, persistence |
+| `components.py` | `RouteMeanRegressor` baseline + `PropagationConsistentImputer` |
+| `explainer.py` | built-in + permutation importances, per-prediction contributors |
+| `predictor.py` | API-facing inference wrapper (payload → feature row) |
+| `main.py` | FastAPI app, pydantic-validated payloads |
+| `tests/` | 5 API, 4 feature-identity, 3 leakage-boundary tests |
 
 ## Dataset
 
